@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"os"
 	"strings"
-	"time"
 )
 
 type HTTPStatus int
@@ -17,11 +17,12 @@ const (
 )
 
 const (
-	AppRouterFolder = "app/"
-	RequestNewLine  = "\r\n"
+	AppFolder      = "app/"
+	RequestNewLine = "\r\n"
 )
 
 func main() {
+	InitiPages()
 	listener, err := net.Listen("tcp", ":8090")
 	if err != nil {
 		log.Fatal("Error listening", err)
@@ -42,7 +43,6 @@ func main() {
 
 func handleConn(conn net.Conn) {
 	defer conn.Close()
-	start := time.Now()
 	for {
 
 		buffer := make([]byte, 1024)
@@ -59,7 +59,8 @@ func handleConn(conn net.Conn) {
 
 		// Handle POST request
 		if request.method == "POST" {
-			conn.Write([]byte(httpRedirect(request.path + fmt.Sprintf("?name=%s", request.body["name"]))))
+			escapedName := url.QueryEscape(request.body["name"])
+			conn.Write([]byte(httpRedirect(request.path + fmt.Sprintf("?name=%s", escapedName))))
 			return
 		}
 
@@ -71,13 +72,18 @@ func handleConn(conn net.Conn) {
 				conn.Write([]byte(httpResponse(StatusNotFound, "text/html", "<h1>Page Not Found</h1>")))
 				return
 			}
-			if request.path == "/" {
-				filePath = "/index.html"
+
+			// Handle html in routes
+			handler, ok := Routes[request.path]
+			if ok {
+				responseString := handler(request)
+				conn.Write([]byte(httpResponse(StatusOk, "text/html", responseString)))
 			}
+
+			// Fallback to static folder
 			// Need to match path to the filesystem
 			// Read the file, catch the error if need be
-
-			targetFile := AppRouterFolder + filePath
+			targetFile := AppFolder + filePath
 			if _, err := os.Stat(targetFile); os.IsNotExist(err) {
 				// If the raw path doesn't exist, try appending html
 				if _, err := os.Stat(targetFile + ".html"); err == nil {
@@ -91,18 +97,18 @@ func handleConn(conn net.Conn) {
 			}
 
 			status := StatusOk
-			contentType := "text/html"
 			responseString := string(fileBytes)
-
-			name := request.queryParams["name"]
-			responseString = replaceKeyInString(responseString, "name", name)
-
+			// Determine the correct Content-Type for the static asset
+			contentType := "text/plain"
 			if strings.HasSuffix(request.path, ".css") {
 				contentType = "text/css"
+			} else if strings.HasSuffix(request.path, ".js") {
+				contentType = "application/javascript"
+			} else if strings.HasSuffix(request.path, ".html") {
+				contentType = "text/html"
 			}
 
 			conn.Write([]byte(httpResponse(status, contentType, responseString)))
-			fmt.Printf("Response generated and sent in: %s\n", time.Since(start))
 		}
 	}
 }
@@ -170,7 +176,12 @@ func parseParams(qps string) map[string]string {
 	for _, pair := range pairs {
 		param := strings.Split(pair, "=")
 		if len(param) == 2 {
-			params[param[0]] = param[1]
+			decodedValue, err := url.QueryUnescape(param[1])
+			if err != nil {
+				// Fallback
+				decodedValue = param[1]
+			}
+			params[param[0]] = decodedValue
 		}
 	}
 	return params
